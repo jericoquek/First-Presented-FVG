@@ -22,16 +22,19 @@ indicator("First Presented FVG", "FPFVG", overlay = true,
 const string TZ = "America/New_York"
 
 // ─── SESSION INPUTS ─────────────────────────────────────────────────────────
-// Three independent session slots at the top of the tab. Session identity is
-// carried on the chart by colour alone — the slot numbers live here only.
+// Three independent session slots at the top of the tab. Each carries its own
+// colour and label text, which is how a zone identifies its session on chart —
+// the slot numbers themselves live here only.
 
 string G1 = "Session 1"
 bool   s1On   = input.bool(false, "Session 1", group = G1, inline = "s1a")
 color  s1Col  = input.color(color.new(#2962FF, 80), "", group = G1, inline = "s1a")
-string s1Sess = input.session("0300-0400", "Session Time", group = G1, inline = "s1b",
-     tooltip = "Detection window (New York time). The FPFVG is the first gap whose confirming candle closes inside this window. The OPENING MINUTE is excluded, so enter the true session open — 0930 begins detection at 0931.")
-string s1Ext  = input.session("0300-0400", "Extend FPFVG", group = G1, inline = "s1c",
-     tooltip = "How far right the zone is carried. The zone still truncates early if a newer FPFVG forms.")
+string s1Sess = input.session("0301-0400", "Session Time", group = G1, inline = "s1b",
+     tooltip = "Detection window (New York time). The FPFVG is the first gap whose MIDDLE candle — the candle holding the imbalance — falls inside this window. Taken literally: a 0931 window makes 0930/0931/0932 the earliest formation, with the gap at 0931. Defaults sit one minute after the session open so the opening candle cannot be the gap.")
+string s1Ext  = input.session("0301-0400", "Extend FPFVG", group = G1, inline = "s1c",
+     tooltip = "How far right the zone is carried, and a hard ceiling — the zone NEVER extends past this time. Want it longer, lengthen it here. A newer FPFVG can only cut it shorter.")
+string s1Lbl  = input.string("3-4 FPFVG", "Label text", group = G1, inline = "s1e",
+     tooltip = "Text drawn on this session's zone. Each slot carries its own, so a zone identifies its session by name as well as colour.")
 bool   s1Hist = input.bool(false, "History", group = G1, inline = "s1d")
 int    s1Days = input.int(2, "", minval = 1, maxval = 60, group = G1, inline = "s1d",
      tooltip = "Days of prior FPFVGs to show for this session. Counts distinct dates on which THIS session produced an FPFVG, so a day it did not fire is skipped rather than consuming depth.")
@@ -39,39 +42,37 @@ int    s1Days = input.int(2, "", minval = 1, maxval = 60, group = G1, inline = "
 string G2 = "Session 2"
 bool   s2On   = input.bool(true, "Session 2", group = G2, inline = "s2a")
 color  s2Col  = input.color(color.new(#00BCD4, 80), "", group = G2, inline = "s2a")
-string s2Sess = input.session("0930-1200", "Session Time", group = G2, inline = "s2b")
-string s2Ext  = input.session("0930-1200", "Extend FPFVG", group = G2, inline = "s2c")
+string s2Sess = input.session("0931-1200", "Session Time", group = G2, inline = "s2b")
+string s2Ext  = input.session("0931-1200", "Extend FPFVG", group = G2, inline = "s2c")
+string s2Lbl  = input.string("Open FPFVG", "Label text", group = G2, inline = "s2e")
 bool   s2Hist = input.bool(false, "History", group = G2, inline = "s2d")
 int    s2Days = input.int(2, "", minval = 1, maxval = 60, group = G2, inline = "s2d")
 
 string G3 = "Session 3"
 bool   s3On   = input.bool(true, "Session 3", group = G3, inline = "s3a")
 color  s3Col  = input.color(color.new(#FF9800, 80), "", group = G3, inline = "s3a")
-string s3Sess = input.session("1000-1100", "Session Time", group = G3, inline = "s3b")
-string s3Ext  = input.session("1000-1100", "Extend FPFVG", group = G3, inline = "s3c")
+string s3Sess = input.session("1001-1100", "Session Time", group = G3, inline = "s3b")
+string s3Ext  = input.session("1001-1100", "Extend FPFVG", group = G3, inline = "s3c")
+string s3Lbl  = input.string("10-11 FPFVG", "Label text", group = G3, inline = "s3e")
 bool   s3Hist = input.bool(false, "History", group = G3, inline = "s3d")
 int    s3Days = input.int(2, "", minval = 1, maxval = 60, group = G3, inline = "s3d")
 
 // ─── FPFVG SETTINGS ─────────────────────────────────────────────────────────
 string GF = "FPFVG Settings"
-float  thr        = input.float(0.0, "Min FVG Size %", minval = 0.0, step = 0.01, group = GF,
-     tooltip = "Minimum gap size as % of price. 0 = accept all. Applied BEFORE the first-decision, so the FPFVG is the first gap that clears this filter. On NQ ~23000: 0.02 = gaps >= ~4.6 pts.")
+string sizeMode   = input.string("ATR multiple", "Min FVG Size", group = GF, inline = "size",
+     options = ["ATR multiple", "Points", "% of price"],
+     tooltip = "Measured on the DRAWN zone height after volume-imbalance encompassing, not the raw wick gap. Applied BEFORE the first-decision, so the FPFVG is the first gap that CLEARS this filter.\n\nATR multiple: zone height against 1m ATR(14). Self-scaling across instruments and volatility regimes — tradeable gaps typically sit at 1.0+, noise below 0.6.\nPoints: a hard floor in price units, for when tradeability should not shrink in a quiet session.\n% of price: zone height as a percentage of price.\n\n0 disables the filter.")
+float  sizeVal    = input.float(0.4, "", minval = 0.0, step = 0.05, group = GF, inline = "size")
 bool   viOn       = input.bool(true, "Encompass Volume Imbalances", group = GF,
      tooltip = "Expand zone boundaries out to adjacent body gaps beside the middle candle. Each side expands independently; when both exist, both are encompassed into one zone.")
 int    histTransp = input.int(88, "Historical transparency", minval = 0, maxval = 100, group = GF,
      tooltip = "Transparency applied to prior-day zones so the current day reads clearly. Swatch sets the hue, this sets the strength.")
-string histEdge   = input.string("Latest FPFVG edge", "Historical right edge", group = GF,
-     options = ["Next FPFVG", "Latest FPFVG edge"],
-     tooltip = "Next FPFVG: each prior zone stops where the following one forms — a continuous, non-overlapping chain. Latest FPFVG edge: every prior zone runs forward to the same right edge as the newest FPFVG, so old levels keep projecting to now. Zones will overlap in this mode.")
-bool   extLatest  = input.bool(true, "Extend latest FPFVG to current bar", group = GF,
-     tooltip = "Carry the newest zone to the right edge regardless of its extend window. Off = it stops at its own extend-to time.")
 
-// ─── C.E. SETTINGS ──────────────────────────────────────────────────────────
-string GC = "C.E. Settings"
-bool   ceOn    = input.bool(true, "C.E.", group = GC, inline = "ce")
-color  ceCol   = input.color(color.new(#787B86, 0), "", group = GC, inline = "ce")
-string ceStyleStr = input.string("Dotted", "", options = ["Solid", "Dashed", "Dotted"], group = GC, inline = "ce")
-int    ceWidth = input.int(1, "", options = [1, 2, 3, 4], group = GC, inline = "ce")
+// ─── C.E. (CONSEQUENT ENCROACHMENT) ─────────────────────────────────────────
+// Hardcoded, no inputs: the midpoint line is a fixed part of the zone's
+// presentation rather than something to restyle per chart.
+const color CE_COLOR = #424351
+const int   CE_WIDTH = 1
 
 // ─── LABEL SETTINGS ─────────────────────────────────────────────────────────
 string GL = "Label Settings"
@@ -81,14 +82,12 @@ color  lblBgCol  = input.color(color.new(#787B86, 100), "", group = GL, inline =
 string lblSizeStr = input.string("small", "", options = ["tiny", "small", "normal", "large"], group = GL, inline = "lbl")
 string lblAlign  = input.string("Right", "Text alignment", options = ["Left", "Center", "Right"], group = GL,
      tooltip = "Horizontal placement along the zone. Right anchors outside the box so the C.E. line does not cut the text. Vertical placement is fixed at the C.E. level.")
-string lblText   = input.string("FPFVG", "Label text", group = GL)
 bool   showDate  = input.bool(false, "Show date", group = GL, inline = "dt")
 string dateFmtStr = input.string("Full", "", group = GL, inline = "dt",
      options = ["Full", "Long", "Medium", "ISO", "Day/Month", "Month/Day", "Short", "Weekday"],
      tooltip = "Full: Friday, August 21, 2026 | Long: Fri, 21 Aug 2026 | Medium: 21 Aug 2026 | ISO: 2026-08-21 | Day/Month: 21/08/2026 | Month/Day: 08/21/2026 | Short: Aug 21 | Weekday: Friday")
 
 // Map string inputs to Pine constants / format patterns
-ceStyle = ceStyleStr == "Solid" ? line.style_solid : ceStyleStr == "Dashed" ? line.style_dashed : line.style_dotted
 lblSize = lblSizeStr == "tiny" ? size.tiny : lblSizeStr == "small" ? size.small : lblSizeStr == "normal" ? size.normal : size.large
 // "Right" anchors at the zone's right edge with style_label_left, so text sits
 // OUTSIDE the box and the C.E. line never runs through it.
@@ -139,6 +138,10 @@ f_scan() =>
     var int   s3En  = na
     var bool  got3  = false
 
+    // ta.* must be evaluated unconditionally on every bar of this context, so
+    // the ATR is taken here rather than inside the filter branch below.
+    float atr1m = ta.atr(14)
+
     string tfp = timeframe.period
     bool in1 = not na(time(tfp, s1Sess, TZ))
     bool in2 = not na(time(tfp, s2Sess, TZ))
@@ -146,14 +149,6 @@ f_scan() =>
     bool ex1 = not na(time(tfp, s1Ext,  TZ))
     bool ex2 = not na(time(tfp, s2Ext,  TZ))
     bool ex3 = not na(time(tfp, s3Ext,  TZ))
-
-    // Opening minute of each session instance. The FPFVG may never be confirmed
-    // on this bar — a 0930 window begins detection at 0931, 0300 at 0301, 1000
-    // at 1001. Enter the true session open; the offset is applied here rather
-    // than being typed into the session string.
-    bool op1 = in1 and not in1[1]
-    bool op2 = in2 and not in2[1]
-    bool op3 = in3 and not in3[1]
 
     // New session instance clears the latch and the slot. The extend-window edge
     // also clears it, but only when the detection window is not already open —
@@ -183,12 +178,11 @@ f_scan() =>
     // promote the SECOND gap to "first".
     bool bull = low > high[2]
     bool bear = high < low[2]
-    float gap = bull ? low - high[2] : bear ? low[2] - high : na
-    bool passes = (bull or bear) and (thr == 0.0 or (gap / close) * 100.0 >= thr)
+    bool isGap = bull or bear
 
     float zTop = na
     float zBot = na
-    if passes
+    if isGap
         float bt0 = math.max(open,    close)
         float bb0 = math.min(open,    close)
         float bt1 = math.max(open[1], close[1])
@@ -212,12 +206,30 @@ f_scan() =>
                 if bt0 < bb1      // lower VI
                     zBot := bt0
 
-    // Registration. Session membership is decided by the CONFIRMING (third)
-    // candle, and the session's opening minute is excluded outright.
+    // Size filter, measured on the DRAWN zone height — the box the eye judges —
+    // rather than the raw wick gap. A 1-point wick gap flanked by body gaps can
+    // draw a 5-point zone; filtering on the wick would discard it.
+    float zHeight = zTop - zBot
+    float minSize = na
+    if sizeMode == "Points"
+        minSize := sizeVal
+    else if sizeMode == "% of price"
+        minSize := close * sizeVal / 100.0
+    else
+        minSize := atr1m * sizeVal
+    // na(minSize) covers the ATR warm-up at the start of a dataset: pass, don't block.
+    bool passes = isGap and (sizeVal <= 0.0 or na(minSize) or zHeight >= minSize)
+
+    // Registration. Session membership follows the MIDDLE candle of the trio —
+    // the candle that holds the imbalance and that the FVG is named for. With a
+    // 0931 window the earliest formation is 0930/0931/0932: the gap is AT 0931,
+    // so the box anchors at 0930 and the trio confirms at 0932.
+    // in1[1] is the session flag one bar back, i.e. at the middle candle.
+    // The session string is taken LITERALLY — no hidden offset is applied.
     if passes and barstate.isconfirmed
-        bool c1 = s1On and in1 and not op1 and not got1
-        bool c2 = s2On and in2 and not op2 and not got2
-        bool c3 = s3On and in3 and not op3 and not got3
+        bool c1 = s1On and in1[1] and not got1
+        bool c2 = s2On and in2[1] and not got2
+        bool c3 = s3On and in3[1] and not got3
         // Overlapping windows can claim the same gap. Register ONCE — the lowest
         // claiming slot owns it — and latch every claimant so none of them later
         // registers a different gap as its "first".
@@ -394,12 +406,6 @@ if barstate.islast
 
         int m = keep.size()
 
-        // Right edge of the newest drawn zone. In "Latest FPFVG edge" mode every
-        // prior zone is carried out to this same point.
-        int latestRight = m > 0 ? rEnd.get(keep.get(m - 1)) : 0
-        if m > 0 and extLatest
-            latestRight := math.max(latestRight, time)
-
         // Guard: `for k = 0 to m - 1` with m == 0 counts DOWNWARDS in Pine and
         // would index an empty array.
         if m > 0
@@ -411,33 +417,30 @@ if barstate.islast
                 int   x1   = rStart.get(i)
                 int   x2   = rEnd.get(i)
 
-                // "Next FPFVG": a newer zone cuts the previous one short, giving a
-                // continuous chain with no overlap. "Latest FPFVG edge": prior zones
-                // are carried out to the newest zone's right edge instead.
-                // Truncation is tested only against DRAWN zones, so a disabled slot
-                // never chops a neighbour.
-                if k < m - 1
-                    x2 := histEdge == "Latest FPFVG edge" ? latestRight : math.min(x2, rStart.get(keep.get(k + 1)))
-                else if extLatest
-                    x2 := math.max(x2, time)
+                // The Extend FPFVG window is the SOLE authority on the right edge.
+                // Each slot owns its own window: another session firing inside it
+                // does NOT cut it short, so overlapping sessions simply draw over
+                // each other, told apart by colour and label. While a window is
+                // still open, rEnd tracks the live bar, so the zone grows to the
+                // right of its own accord and freezes when the window closes.
                 if x2 <= x1
                     x2 := x1 + 60000
 
-                color baseC  = s == 1 ? s1Col : s == 2 ? s2Col : s3Col
-                bool  isHist = f_date(x1) < lastDate
-                color zoneC  = isHist ? color.new(baseC, histTransp) : baseC
-                color lineC  = isHist ? color.new(ceCol, histTransp) : ceCol
-                color txtC   = isHist ? color.new(lblTxtCol, histTransp) : lblTxtCol
-                float mid    = math.avg(zt, zb)
+                color  baseC  = s == 1 ? s1Col : s == 2 ? s2Col : s3Col
+                string slotLbl = s == 1 ? s1Lbl : s == 2 ? s2Lbl : s3Lbl
+                bool   isHist = f_date(x1) < lastDate
+                color  zoneC  = isHist ? color.new(baseC, histTransp) : baseC
+                color  lineC  = isHist ? color.new(CE_COLOR, histTransp) : CE_COLOR
+                color  txtC   = isHist ? color.new(lblTxtCol, histTransp) : lblTxtCol
+                float  mid    = math.avg(zt, zb)
 
                 dBox.push(box.new(x1, zt, x2, zb, xloc = xloc.bar_time,
                      border_color = na, bgcolor = zoneC))
 
-                if ceOn
-                    dLine.push(line.new(x1, mid, x2, mid, xloc = xloc.bar_time,
-                         color = lineC, style = ceStyle, width = ceWidth))
+                dLine.push(line.new(x1, mid, x2, mid, xloc = xloc.bar_time,
+                     color = lineC, style = line.style_dotted, width = CE_WIDTH))
 
                 if lblOn
-                    string txt = lblText + (showDate ? " " + str.format_time(x1, dateFmt, TZ) : "")
+                    string txt = slotLbl + (showDate ? " " + str.format_time(x1, dateFmt, TZ) : "")
                     dLbl.push(label.new(f_lblX(x1, x2), mid, txt, xloc = xloc.bar_time,
                          style = lblStyle, color = lblBgCol, textcolor = txtC, size = lblSize))
