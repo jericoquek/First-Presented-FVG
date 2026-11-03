@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/31471306/README.md)
+[README.md](https://github.com/user-attachments/files/34303503/README.md)
 # First Presented FVG (FPFVG)
 
 A TradingView indicator that marks the first Fair Value Gap presented inside each of up to three session windows — and nothing else.
@@ -26,15 +26,19 @@ Standard three-candle Fair Value Gap:
 
 There is deliberately **no middle-candle close confirmation**. Some implementations require the middle candle to close beyond the far candle's extreme. That filter silently rejects valid gaps where the middle candle is a wide-range bar that closed back inside its own range. On a general FVG tool you lose one zone out of many. On a *first-presented* tool, rejecting the real first gap promotes the second one to "first" — a wrong answer rather than a missing one.
 
-### Session membership
+### Session membership follows the middle candle
 
-Decided by the **confirming (third) candle**. A gap belongs to whichever window its third candle closes inside.
+A gap belongs to whichever window its **middle candle** falls inside — the candle that holds the imbalance and that the gap is named for.
 
-### The opening-minute rule
+This is the rule that makes the session times mean what they look like. A `0931` window makes the earliest possible formation **09:30 / 09:31 / 09:32**: the gap is at 09:31, so the box anchors at 09:30 and the trio confirms at 09:32.
 
-The first bar of each session instance can never confirm an FPFVG. A `0930` window begins detection at `09:31`; `0300` begins at `03:01`; `1000` begins at `10:01`.
+Gating on the confirming candle instead would let a `0931` window admit the trio 09:29/09:30/09:31 — a gap sitting at 09:30, a minute before the window opens.
 
-Enter the **true session open**. The offset is applied in code, not typed into the session string. Entering `0931` yields `09:32`, because the code adds its own minute on top.
+### Session strings are literal
+
+No hidden offset. `0301` begins detection at 03:01. What is typed is what runs.
+
+The shipped defaults sit one minute after each session open (`0301`, `0931`, `1001`) so the opening candle cannot be the gap. Set them to `0300` / `0930` / `1000` if you want it to be.
 
 ### First is first
 
@@ -56,11 +60,27 @@ Toggleable, on by default.
 
 ### No direction
 
-Gap up and gap down are both simply *the first gap*. There is no polarity in the label and no bull/bear colour pair. Colour identifies the **session slot**, nothing else.
+Gap up and gap down are both simply *the first gap*. There is no polarity in the label and no bull/bear colour pair. Colour and label text identify the **session slot**, nothing else.
 
 ### Size filter
 
-`Min FVG Size %` is applied **before** the first-decision, so the FPFVG is the first gap that *clears the filter* — not the first gap, subsequently discarded for being too small.
+`Min FVG Size` is applied **before** the first-decision, so the FPFVG is the first gap that *clears the filter* — not the first gap, subsequently discarded for being too small. Without it a 2-point gap takes the slot and the real one five minutes later never gets drawn.
+
+It measures the **drawn zone height after volume-imbalance encompassing**, not the raw wick gap. Those are not the same number: a 1-point wick gap flanked by body gaps can draw a 5-point zone, and filtering on the wick would discard something perfectly tradeable.
+
+Three bases:
+
+| Mode | Measures against | Use when |
+|---|---|---|
+| `ATR multiple` (default, 0.4) | 1m ATR(14) | Default. Self-scaling across instruments and volatility regimes |
+| `Points` | Price units | Tradeability should not shrink in a quiet session |
+| `% of price` | Current price | Comparing across very different price levels |
+
+`0` disables the filter.
+
+On 1m index futures the separation is wide: zone-to-ATR ratios for obvious noise sit at 0.3 and below, and the gaps worth marking run from roughly 0.45 upward. `0.4` sits just under that floor.
+
+ATR warm-up at the very start of a dataset yields `na`, which passes rather than blocks.
 
 ---
 
@@ -76,7 +96,7 @@ Detection always runs on the **1-minute series** via `request.security`, whateve
 
 The gate is intentional. The first presented gap is a 1-minute reference; on a 5-minute chart the "first gap of the session" is a different gap, so the level would be silently wrong rather than absent.
 
-**Known cosmetic limitation:** zone left edges use `xloc.bar_time` and therefore snap to the chart's bar grid. A gap formed at 09:33 anchors to the 09:30 bar on a 5m chart. Price levels remain exact; only the horizontal anchor rounds.
+**Known cosmetic limitation:** zone left edges use `xloc.bar_time` and therefore snap to the chart's bar grid. A gap anchored at 09:33 draws from the 09:30 bar on a 5m chart. Price levels remain exact; only the horizontal anchor rounds.
 
 ---
 
@@ -98,27 +118,33 @@ A slot whose start time changes has produced a new FPFVG and is appended to the 
 
 Pine rolls `var` state back on each realtime tick, so ingesting on unconfirmed bars is safe and lets the current session's zone appear live.
 
+### The extend window is the sole authority on the right edge
+
+Each slot owns its own window. Nothing carries a zone past it, and nothing cuts it short:
+
+- Another session firing inside the window does **not** truncate it. Overlapping sessions draw over each other and are told apart by colour and label.
+- While a window is open, the stored right edge tracks the live bar, so the zone grows rightward on its own and freezes when the window closes.
+
+Want a zone to run longer, lengthen its window. That is the only control.
+
+Earlier builds had three separate mechanisms competing to set the right edge — a `Historical right edge` mode, an `Extend latest FPFVG to current bar` toggle, and cross-session truncation. Each quietly overrode the extend window from a different direction. All three are gone.
+
 ### Overlapping windows
 
-Session 3 (`10:00–11:00`) sits inside Session 2 (`09:30–12:00`). If a single gap is the first for both, it registers **once** — the lowest-numbered claiming slot owns it — and every claimant is latched so none goes hunting for a later gap as its own "first". One box, not two stacked at doubled opacity.
+Session 3 (`1001-1100`) sits inside Session 2 (`0931-1200`). If a single gap is the first for both, it registers **once** — the lowest-numbered claiming slot owns it — and every claimant is latched so none goes hunting for a later gap as its own "first". One box, not two stacked at doubled opacity.
 
-### Right-edge resolution
-
-Two modes:
-
-- **Latest FPFVG edge** (default) — every prior zone runs forward to the newest zone's right edge. Old levels keep projecting into the present.
-- **Next FPFVG** — each zone stops where the following one forms, giving a continuous non-overlapping chain.
-
-Truncation is tested only against **drawn** zones, so disabling a slot never leaves a phantom cutting a neighbour short.
+Where two *different* zones overlap in price, the translucent fills stack and the band reads darker than either alone. Lower the session swatch opacity if that gets in the way.
 
 ### Drawing
 
-Zones are static references with absolute time coordinates, so the whole drawing set is torn down and rebuilt on the last bar rather than maintained per bar. The draw set is sorted by formation time before truncation is computed, because slots are ingested in slot order rather than clock order.
+Zones are static references with absolute time coordinates, so the whole drawing set is torn down and rebuilt on the last bar rather than maintained per bar. The draw set is sorted by formation time, because slots are ingested in slot order rather than clock order.
 
 ### Pine gotchas guarded against
 
 - `for k = 0 to m - 1` counts **downwards** when `m` is 0, indexing position −1. Every such loop is guarded by a non-empty check.
 - Per-slot records reset to `na` when a new session instance opens, so a stale record can never be carried forward by the next day's extend window.
+- A wrapped expression must continue on a line indented by a number of spaces that is **not** a multiple of 4, or Pine reads it as a new statement. Multi-line ternaries in this file sit at 5 or 17 spaces. Where that got fragile the expression was converted to an `if`/`else` chain instead.
+- `ta.*` must be evaluated unconditionally on every bar of its context, so the ATR is taken at the top of the detection function rather than inside the filter branch.
 
 ---
 
@@ -130,8 +156,9 @@ Zones are static references with absolute time coordinates, so the whole drawing
 |---|---|---|
 | Enable | off / on / on | |
 | Colour | blue / cyan / orange | Identifies the slot; carries no direction |
-| Session Time | 0300-0400 / 0930-1200 / 1000-1100 | Detection window, New York, opening minute excluded |
-| Extend FPFVG | mirrors session time | Governs the right edge; start only matters if it precedes the session |
+| Session Time | 0301-0400 / 0931-1200 / 1001-1100 | Detection window, New York, literal — the gap sits at the start minute |
+| Extend FPFVG | mirrors session time | Hard ceiling on the right edge; nothing extends past it |
+| Label text | `3-4 FPFVG` / `Open FPFVG` / `10-11 FPFVG` | Drawn on that slot's zone |
 | History | off | Show prior days for this slot |
 | Days | 2 | Counts days *this slot* produced a gap, so blank days are skipped |
 
@@ -139,23 +166,21 @@ Zones are static references with absolute time coordinates, so the whole drawing
 
 | Input | Default | Notes |
 |---|---|---|
-| Min FVG Size % | 0 | Percentage of price. Applied before the first-decision |
+| Min FVG Size | ATR multiple / 0.4 | Measured on zone height post-VI. Applied before the first-decision |
 | Encompass Volume Imbalances | on | |
 | Historical transparency | 88 | Swatch sets hue, this sets strength |
-| Historical right edge | Latest FPFVG edge | Or *Next FPFVG* |
-| Extend latest FPFVG to current bar | on | |
 
-### C.E. Settings
+### C.E. (Consequent Encroachment)
 
-Consequent encroachment line at the zone midpoint — toggle, colour, style (default dotted), width.
+Hardcoded, no inputs: the zone's midpoint line is `#424351`, dotted, width 1. It is a fixed part of the zone's presentation rather than something to restyle per chart.
+
+On historical zones it inherits `Historical transparency` along with the box.
 
 ### Label Settings
 
-Toggle, text colour, background, size, alignment, label text (`FPFVG`), and an optional date stamp.
+Toggle, text colour, background, size, alignment, and an optional date stamp. The text itself is per session, in each session's own group.
 
 Date formats: `Full` (Friday, August 21, 2026), `Long` (Fri, 21 Aug 2026), `Medium`, `ISO`, `Day/Month`, `Month/Day`, `Short`, `Weekday`. Rendered in New York time so the stamp matches the session day rather than the exchange day.
-
-**Run Left alignment with Latest FPFVG edge.** Every zone shares a right edge in that mode, so right-aligned labels overprint on the same spot.
 
 ---
 
